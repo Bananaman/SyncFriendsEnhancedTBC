@@ -488,9 +488,9 @@ local options = {
     }
 }
 
-LibStub("AceConfig-3.0"):RegisterOptionsTable("SyncFriends", options,
+LibStub("AceConfig-3.0-ElvUI"):RegisterOptionsTable("SyncFriends", options,
     {"sf", "syncfriends"})
-LibStub("AceConfigDialog-3.0"):AddToBlizOptions("SyncFriends")
+LibStub("AceConfigDialog-3.0-ElvUI"):AddToBlizOptions("SyncFriends")
 
 -- XXX: Should be fetched from WoW API
 local MAX_FRIEND_COUNT = 100
