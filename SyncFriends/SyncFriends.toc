@@ -1,7 +1,9 @@
-## Interface: 60200
-## Title: SyncFriends
-## Author: Vincent Pelletier
+## Interface: 20400
+## Title: SyncFriends (TBC)
 ## Version: 1.3.3
+## Author: Vincent Pelletier
+## X-Additional-Authors: VideoPlayerCode (TBC Backporting)
+## X-Website: https://github.com/VideoPlayerCode/SyncFriendsTBC
 ## Notes: Synchronise friends among your characters
 ## SavedVariables: SyncFriendsDB
 ## Dependencies: Ace3
