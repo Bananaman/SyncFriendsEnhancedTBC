@@ -548,6 +548,12 @@ local ACTION_NAME_MAP = {
     [SKIP_ACTION] = "|cff555555"..L["skipping"].."|r",
 }
 
+local ACTION_LIST_PREFIX_MAP = {
+    [ADD_ACTION] = "|cff00ff00++|r ",
+    [REMOVE_ACTION] = "|cffff0000--|r ",
+    [SKIP_ACTION] = "|cff555555**|r ",
+}
+
 local STATUS_SELF = 0
 local STATUS_ALT = 1
 local STATUS_FRIEND = 2
@@ -820,7 +826,7 @@ function SyncFriends:setKnownBy(playerName)
     local known_by = playerData.known_by
     if not known_by then
         playerData.known_by = {}
-        known_by = playerData.known_by 
+        known_by = playerData.known_by
     end
     known_by[current_playerName] = true
 end
@@ -876,8 +882,12 @@ function SyncFriends:storeAction(playerName, action, force, is_alt)
         pool[playerName].action = action
     end
     if need_ui_sync_pool_add then
-        -- Call addUISyncPoolOption only once playerData is fully set.
+        -- User is adding somebody to the pool.
+        -- NOTE: We're calling addUISyncPoolOption only after playerData is fully set.
         self:addUISyncPoolOption(playerName, playerData)
+    elseif old_value ~= action then
+        -- User is updating action for an existing person, so refresh their GUI colors.
+        self:_refreshUISyncPoolOption(playerName)
     end
 end
 
@@ -1179,15 +1189,40 @@ function SyncFriends:addUISyncPoolOption(friend_name, friend_data)
     end
 end
 
+function SyncFriends:_getFormattedUIPoolName(friend_name, friend_data)
+    -- returns the person's name with a colored prefix based on the configured action for that person
+    local prefix, display_name
+    if friend_data and friend_data.action then
+        prefix = ACTION_LIST_PREFIX_MAP[friend_data.action]
+    end
+    display_name = self:getPrintablePlayerName(friend_name, friend_data)
+    if prefix then
+        display_name = prefix .. display_name
+    end
+
+    return display_name
+end
+
 function SyncFriends:_addUISyncPoolOption(friend_map)
     self.ui_sync_pool_option_cache_renumber = true
     for friend_name, friend_data in pairs(friend_map) do
         self.ui_sync_pool_option_cache[friend_name] = {
-            name = self:getPrintablePlayerName(friend_name, friend_data),
+            name = self:_getFormattedUIPoolName(friend_name, friend_data),
             type = "group",
             args = ui_sync_pool_action_option,
             desc = self:getPrintablePlayerStatus(friend_name, friend_data),
         }
+    end
+end
+
+function SyncFriends:_refreshUISyncPoolOption(friend_name)
+    -- no need to renumber here
+    local pool = self:getPool()
+    local friend_data = pool[friend_name]
+    if self.ui_sync_pool_option_cache and self.ui_sync_pool_option_cache[friend_name] and friend_data then
+        -- refresh the name and description of the pool option
+        self.ui_sync_pool_option_cache[friend_name].name = self:_getFormattedUIPoolName(friend_name, friend_data)
+        self.ui_sync_pool_option_cache[friend_name].desc = self:getPrintablePlayerStatus(friend_name, friend_data)
     end
 end
 
