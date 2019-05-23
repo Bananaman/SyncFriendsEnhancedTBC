@@ -28,6 +28,7 @@ local floor = math.floor
 local select = select
 local ipairs = ipairs
 local pairs = pairs
+local next = next
 local setmetatable = setmetatable
 local error = error
 local tostring = tostring
@@ -56,7 +57,7 @@ local tsort = table.sort
 -- GLOBALS: SyncFriends
 
 SyncFriends = LibStub("AceAddon-3.0"):NewAddon("SyncFriends", "AceConsole-3.0",
-  "AceHook-3.0", "AceEvent-3.0")
+  "AceHook-3.0", "AceEvent-3.0", "AceTimer-3.0")
 
 local L = LibStub("AceLocale-3.0"):GetLocale("SyncFriends", true)
 
@@ -513,10 +514,130 @@ LibStub("AceConfigDialog-3.0-ElvUI"):AddToBlizOptions("SyncFriends")
 -- friends data even if the game is full. It's always stored in your SyncFriends pool!
 local MAX_FRIEND_COUNT = 50
 
+-- Action flags.
 local ADD_ACTION = 1
 local REMOVE_ACTION = 2
 local SKIP_ACTION = 3
 
+-- Queue to ensure that this addon follows the allowed rate limits by servers,
+-- and only performs one add/remove-action at a time UNTIL that action succeeds.
+local FriendQueue = {
+    queue = {},
+    pending = nil, -- Will hold name of person from queue we're waiting on AddFriend/RemoveFriend result for...
+    attempt = 0, -- How many attempts we've given that person...
+    timerHandle = nil, -- Handle to the "anti-stuck" timer...
+}
+
+function FriendQueue:GetAllFriends()
+    local nilFound = false
+    local allFriends = {}
+    local playerName
+    for i = 1, GetNumFriends() do
+        playerName = GetFriendInfo(i)
+        if playerName == nil then
+            nilFound = true
+            break
+        else
+            allFriends[playerName] = true
+        end
+    end
+
+    return allFriends, nilFound
+end
+
+function FriendQueue:Add(playerName, ignore)
+    self.queue[playerName] = {
+        action = ADD_ACTION,
+        ignore = ignore,
+    }
+    if not self.pending then
+        self:DoNext()
+    end
+end
+
+function FriendQueue:Remove(playerName, ignore)
+    self.queue[playerName] = {
+        action = REMOVE_ACTION,
+        ignore = ignore,
+    }
+    if not self.pending then
+        self:DoNext()
+    end
+end
+
+function FriendQueue:DoNext()
+    if self.pending and not self.queue[self.pending] then
+        -- Clear any lingering "pending" entry that has been deleted from queue.
+        self.pending = nil
+        self.attempt = 0
+    end
+    if not self.pending then
+        -- Get next queue entry (or nil if queue is empty).
+        self.pending = next(self.queue)
+        self.attempt = 0
+    end
+    if self.pending then
+        -- Process the active "pending" entry.
+        self.attempt = self.attempt + 1
+        local data = self.queue[self.pending]
+        local apiCall = (data.action == ADD_ACTION and AddFriend) or (data.action == REMOVE_ACTION and RemoveFriend)
+        if apiCall then
+            -- Check if the desired action is already accomplished and doesn't need to happen again.
+            local allFriends, nilFound = FriendQueue:GetAllFriends()
+            if not nilFound then -- No nil = List is fully loaded.
+                local success = self:_CheckSuccess(allFriends, self.pending, data.action)
+                if success then
+                    apiCall = false -- Will cause the "else"-path below which clears this entry and tries next.
+                end
+            end
+        end
+        if self.attempt <= 5 and apiCall then
+            SyncFriends:CancelTimer(self.timerHandle, true) -- Cancel any previous, untriggered timer.
+            self.timerHandle = SyncFriends:ScheduleTimer(FriendQueue.HandleTimerTrigger, 5, FriendQueue) -- Anti-stuck timer (5s).
+            apiCall(self.pending, data.ignore) -- Result of this API call will cause FRIENDLIST_UPDATE to trigger.
+        else
+            -- Invalid action or too many attempts; remove person from queue and re-trigger to get another entry.
+            self.queue[self.pending] = nil
+            self:DoNext()
+        end
+    end
+end
+
+function FriendQueue:HandleTimerTrigger()
+    -- Timeout ("FRIENDLIST_UPDATE" didn't trigger). Perform anti-stuck action
+    -- by retrying or skipping that entry (if too many attempts).
+    FriendQueue:DoNext()
+end
+
+function FriendQueue:_CheckSuccess(allFriends, playerName, desiredAction)
+    if desiredAction == ADD_ACTION then
+        if allFriends[playerName] then
+            return true
+        end
+    elseif desiredAction == REMOVE_ACTION then
+        if not allFriends[playerName] then
+            return true
+        end
+    end
+
+    return false
+end
+
+function FriendQueue:HandleFriendsUpdate(allFriends)
+    -- This function is called with the full list of ALL of the player's friends, after a friends list
+    -- update has been performed (adding/removing), or if that event has been triggered manually (by "ShowFriends()").
+    SyncFriends:CancelTimer(self.timerHandle, true) -- Cancel any untriggered "anti-stuck" timer.
+    if self.pending and self.queue[self.pending] then
+        local data = self.queue[self.pending]
+        local success = self:_CheckSuccess(allFriends, self.pending, data.action)
+        if success then
+            self.queue[self.pending] = nil
+        end
+    end
+    self:DoNext() -- Process next queue entry (if any remains), or retry current entry if necessary...
+end
+
+-- Action implementations.
 local ACTION_MAP = {
     [ADD_ACTION] = function(self, playerName, friend_set)
         local result
@@ -527,7 +648,7 @@ local ACTION_MAP = {
                 result = sformat(L["You have reached the maximum "..
                   "number of friends, could not add %s"], playerName)
             else
-                AddFriend(playerName)
+                FriendQueue:Add(playerName)
                 friend_set[playerName] = true
                 result = sformat(L["Added %s"], playerName)
             end
@@ -537,7 +658,7 @@ local ACTION_MAP = {
     [REMOVE_ACTION] = function(self, playerName, friend_set)
         local result
         if friend_set[playerName] then
-            RemoveFriend(playerName)
+            FriendQueue:Remove(playerName)
             friend_set[playerName] = nil
             result = sformat(L["Removed %s"], playerName)
         else
@@ -626,16 +747,8 @@ function SyncFriends:FRIENDLIST_UPDATE(...)
     -- For some reason, some friends might still be nil after receiving
     -- FRIENDLIST_UPDATE event, so we must check if there are nils to decide
     -- if the list is really loaded.
-    local nil_found = false
-    local playerName
-    for x = 1, GetNumFriends() do
-        playerName = GetFriendInfo(x)
-        if playerName == nil then
-            nil_found = true
-            break
-        end
-    end
-    if nil_found then
+    local allFriends, nilFound = FriendQueue:GetAllFriends()
+    if nilFound then
         if self.nil_in_last_friendlist_update and
                 not self.nil_in_last_friendlist_update_warned then
             self:Print(L["Warning: Some friend's data isn't loaded after "..
@@ -647,6 +760,8 @@ function SyncFriends:FRIENDLIST_UPDATE(...)
         -- Trigger another FRIENDLIST_UPDATE
         ShowFriends()
     else
+        FriendQueue:HandleFriendsUpdate(allFriends)
+
         self.nil_in_last_friendlist_update = false
         self.nil_in_last_friendlist_update_warned = false
         self.friend_list_loaded = true
@@ -654,7 +769,16 @@ function SyncFriends:FRIENDLIST_UPDATE(...)
             self.friendlist_update_callback(self)
             self.friendlist_update_callback = nil
         end
-        self:UnregisterEvent("FRIENDLIST_UPDATE")
+
+        -- Since we've definitely got the 100% loaded friend list now, and have fired our
+        -- callback (above) if any exists, it's now safe to unregister the event again.
+        -- UPDATE: No... the event will stay registered forever, due to the FriendQueue
+        -- system. If we constantly register/unregister the event, it often misses
+        -- triggering, and that causes FriendQueue to fall back to its slow anti-stuck
+        -- timer instead. Staying registered is no problem; this event fires twice every
+        -- time the user opens their friends list, but so what?! The work our function
+        -- does here finishes in just a handful of milliseconds.
+        --self:UnregisterEvent("FRIENDLIST_UPDATE")
     end
 end
 
@@ -920,7 +1044,6 @@ function SyncFriends:importExport()
     if not self.friend_list_loaded then
         all_loaded = false
         if not self.friendlist_update_callback then
-            self:RegisterEvent("FRIENDLIST_UPDATE")
             -- Make us be called when FRIENDLIST_UPDATE is fired next
             self.friendlist_update_callback = SyncFriends.importExport
             -- Causes FRIENDLIST_UPDATE to be fired
@@ -1026,7 +1149,7 @@ function SyncFriends:importExport()
                     -- That player is part of our guild, remove him from friend
                     -- list. He must not be marked for deletion by our hook.
                     self:Print("Removing friend from same guild.")
-                    RemoveFriend(x, true)
+                    FriendQueue:Remove(x, true)
                     break
                 end
                 -- Update friend notes
