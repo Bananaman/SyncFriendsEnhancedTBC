@@ -492,8 +492,12 @@ LibStub("AceConfig-3.0-ElvUI"):RegisterOptionsTable("SyncFriends", options,
     {"sf", "syncfriends"})
 LibStub("AceConfigDialog-3.0-ElvUI"):AddToBlizOptions("SyncFriends")
 
--- XXX: Should be fetched from WoW API
-local MAX_FRIEND_COUNT = 100
+-- IMPORTANT: The Burning Crusade only supports having 50 people on your friends list,
+-- and this variable ensures that we don't attempt to add more people after that.
+-- However, the SyncFriends addon *itself* will remember infinite people, in its
+-- own pool (cache) of all friends from all of your alts! So you will never lose any
+-- friends data even if the game is full. It's always stored in your SyncFriends pool!
+local MAX_FRIEND_COUNT = 50
 
 local ADD_ACTION = 1
 local REMOVE_ACTION = 2
