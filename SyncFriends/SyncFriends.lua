@@ -23,7 +23,10 @@ Note:
 --]]
 
 -- lua
+local ceil = math.ceil
+local floor = math.floor
 local select = select
+local ipairs = ipairs
 local pairs = pairs
 local setmetatable = setmetatable
 local error = error
@@ -32,6 +35,7 @@ local type = type
 local string = string
 local sformat = string.format
 local slower = string.lower
+local supper = string.upper
 local table = table
 local tinsert = table.insert
 local tconcat = table.concat
@@ -45,6 +49,9 @@ local tsort = table.sort
 -- LibStub
 -- GLOBALS: LibStub
 
+-- DoIKnowYou (optional dependency for showing notes in the friends list)
+-- GLOBALS: DoIKnowYou
+
 -- This addon
 -- GLOBALS: SyncFriends
 
@@ -56,6 +63,13 @@ local L = LibStub("AceLocale-3.0"):GetLocale("SyncFriends", true)
 local POOL_STRUCTURE_VERSION = 1
 
 local current_playerName = UnitName("player")
+
+local DoIKnowYouDB = DoIKnowYou and DoIKnowYou.db
+local DoIKnowYouRealm = DoIKnowYouDB and DoIKnowYouDB.realm
+local DoIKnowYouData = DoIKnowYouRealm and DoIKnowYouRealm.data
+local DoIKnowYouProfile = DoIKnowYouDB and DoIKnowYouDB.profile
+local DoIKnowYouPrimaryChar = DoIKnowYouRealm and DoIKnowYouRealm.primaryChar
+local DoIKnowYouLocale = DoIKnowYou and LibStub("AceLocale-3.0"):GetLocale("DoIKnowYou", false)
 
 local function copyTable(...)
     --[[
@@ -1203,6 +1217,57 @@ function SyncFriends:_getFormattedUIPoolName(friend_name, friend_data)
     return display_name
 end
 
+function SyncFriends:_getFormattedUIPoolDesc(friend_name, friend_data)
+    local desc = self:getPrintablePlayerStatus(friend_name, friend_data)
+
+    if desc and DoIKnowYouData then
+        local friend_name_upper = supper(friend_name)
+        local dikyData = DoIKnowYouData[friend_name_upper]
+        if dikyData then
+            -- Extract total reputation points as a clean number and formatted string.
+            local rep = dikyData.total or 0
+            local repStr
+            if (ceil(rep) > 0) then
+                rep = ceil(rep)
+                repStr = DoIKnowYouLocale["Positive"] .. " (+" .. rep .. ")"
+            elseif (floor(rep) < 0) then
+                rep = floor(rep)
+                repStr = DoIKnowYouLocale["Negative"] .. " (" .. tostring(rep) .. ")" -- Automatically gets a "-" prefix.
+            else
+                rep = 0
+                repStr = DoIKnowYouLocale["Neutral"]
+            end
+
+            desc = desc .. "\n\nDoIKnowYou: " .. DoIKnowYou:getRepColor(rep) .. repStr .. "|r"
+
+            -- Extract their note, preferring ones written by the player themselves,
+            -- but also supporting "trusted authors" (a "DoIKnowYouEnhancedTBC" feature).
+            local note
+            if DoIKnowYouPrimaryChar then
+                local ownData = dikyData[DoIKnowYouPrimaryChar]
+                if ownData and ownData.note ~= nil and ownData.note ~= "" then
+                    note = ownData.note
+                end
+            end
+            if (not note) and DoIKnowYouProfile.trustedCommentAuthors then -- Only exists in "DoIKnowYouEnhancedTBC".
+                for _,author in ipairs(DoIKnowYouProfile.trustedCommentAuthors) do
+                    local trustedData = dikyData[author]
+                    if trustedData and trustedData.note ~= nil and trustedData.note ~= "" then
+                        note = author .. " says: \"" .. trustedData.note .. "\""
+                        break -- stop scanning
+                    end
+                end
+            end
+
+            if note then
+                desc = desc .. "\n" .. DoIKnowYou:getRepColor(rep) .. note .. "|r"
+            end
+        end
+    end
+
+    return desc
+end
+
 function SyncFriends:_addUISyncPoolOption(friend_map)
     self.ui_sync_pool_option_cache_renumber = true
     for friend_name, friend_data in pairs(friend_map) do
@@ -1210,7 +1275,7 @@ function SyncFriends:_addUISyncPoolOption(friend_map)
             name = self:_getFormattedUIPoolName(friend_name, friend_data),
             type = "group",
             args = ui_sync_pool_action_option,
-            desc = self:getPrintablePlayerStatus(friend_name, friend_data),
+            desc = self:_getFormattedUIPoolDesc(friend_name, friend_data),
         }
     end
 end
@@ -1222,7 +1287,7 @@ function SyncFriends:_refreshUISyncPoolOption(friend_name)
     if self.ui_sync_pool_option_cache and self.ui_sync_pool_option_cache[friend_name] and friend_data then
         -- refresh the name and description of the pool option
         self.ui_sync_pool_option_cache[friend_name].name = self:_getFormattedUIPoolName(friend_name, friend_data)
-        self.ui_sync_pool_option_cache[friend_name].desc = self:getPrintablePlayerStatus(friend_name, friend_data)
+        self.ui_sync_pool_option_cache[friend_name].desc = self:_getFormattedUIPoolDesc(friend_name, friend_data)
     end
 end
 
@@ -1263,4 +1328,39 @@ function SyncFriends:getUISyncPoolOption()
         self.ui_sync_pool_option_cache_renumber = nil
     end
     return friend_set
+end
+
+-- DoIKnowYou Addon Integration:
+if DoIKnowYou and DoIKnowYou.sendMyData then
+    -- All DoIKnowYou data writing functions (such as changing reputation
+    -- or writing notes) will cause its "sendMyData" to be called. So we
+    -- hook that to auto-update our SyncFriends descriptions when DoIKnowYou
+    -- changes, to ensure that we'll always integrate the latest notes/ratings!
+    -- NOTE: The AceConfigDialog list will render the changed description in
+    -- realtime, since the ".desc" field is used for tooltip data, so as soon
+    -- as the user hovers over a person, they'll always see the latest ".desc".
+
+    -- Refuse to update if "sendMyData" was called via DoIKnowYou's syncing,
+    -- when WE were asked to send our data OUT (that's via "RequestData").
+    -- NOTE: We also won't update on "ReceiveData" when we get data from
+    -- others, since that would require a lot of code for little benefit.
+    local doUpdate = true
+    local origRequestData = DoIKnowYou.RequestData
+    DoIKnowYou.RequestData = function(self, ...)
+        doUpdate = false
+        local ret = origRequestData(self, ...)
+        doUpdate = true
+        return ret
+    end
+
+    -- Now install the core hook which detects when data needs updating.
+    local origSendMyData = DoIKnowYou.sendMyData
+    DoIKnowYou.sendMyData = function(self, name_upper, ...)
+        local ret = origSendMyData(self, name_upper, ...)
+        if name_upper and doUpdate then
+            local name = (slower(name_upper):gsub("^%l", supper)) -- Transform to "Propername" case.
+            SyncFriends:_refreshUISyncPoolOption(name) -- NOTE: Does nothing if we don't have that person in our list.
+        end
+        return ret
+    end
 end
