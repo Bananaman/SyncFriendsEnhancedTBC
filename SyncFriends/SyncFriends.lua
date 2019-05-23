@@ -37,6 +37,7 @@ local string = string
 local sformat = string.format
 local slower = string.lower
 local supper = string.upper
+local strim = strtrim
 local table = table
 local tinsert = table.insert
 local tconcat = table.concat
@@ -735,7 +736,7 @@ function SyncFriends:OnEnable()
     -- or adding a non-existent player from/to friend list will pollute the
     -- pool.
     self:SecureHook("AddFriend")
-    self:Hook("RemoveFriend", true)
+    self:Hook("RemoveFriend", true) -- XXX: Pre-hooks securely? A regular "SecureHook("RemoveFriend")" post-hook works too...
     self:SecureHook("SetFriendNotes")
 end
 
@@ -806,18 +807,43 @@ function SyncFriends:GUILD_ROSTER_UPDATE(event, changed)
     self:UnregisterEvent("GUILD_ROSTER_UPDATE")
 end
 
-function SyncFriends:AddFriend(playerName, ignore)
+function SyncFriends:_cleanupNameInput(playerName)
+    -- Validate and clean up the input, since "/friend somebody" or "/removefriend sOmEbODY" would give us illegal-case input.
+    if type(playerName) ~= "string" then return; end
+    playerName = strim(playerName) -- Remove leading/trailing whitespace.
+    if playerName == "" then return; end
+    playerName = self:_properNameCase(playerName)
+    return playerName
+end
+
+function SyncFriends:AddFriend(playerName, ignoreOrNote)
     -- "ignore" is a fake argument which is expected to be True when an addon
     -- is temporarily adding a friend, which should not be synchronised.
     -- One such example is BadBoy_Levels.
     -- This API change was initially suggested by Tekkub, author of
     -- FriendsWithBenefits.
-    if not ignore then
+    -- However, the official AddFriend API already uses the 2nd parameter for
+    -- its "player note", such as in "/friend somebody hello" in which case
+    -- their saved note would be set to "hello". In fact, even if the user
+    -- just types "/friend somebody", the second parameter is provided as an
+    -- empty string in that situation! In OTHER official cases, arg2 is nil.
+    if ignoreOrNote ~= true then
+        playerName = self:_cleanupNameInput(playerName) -- Fix dirty user input...
+        if not playerName then return; end -- Don't proceed if we lack a name at this point (ie. cleanup gave us nothing left).
         if self:getAutoExport() then
             self:storeAction(playerName, ADD_ACTION, false)
         end
         if self:getPool()[playerName] then
             self:setKnownBy(playerName)
+
+            -- Also store the note if one exists and the user has enabled note syncing.
+            if type(ignoreOrNote) == "string" and
+                self:getUseGlobalNoteForFriend(playerName) then
+                local noteText = strim(ignoreOrNote)
+                if noteText ~= "" then
+                    self:setNote(playerName, noteText)
+                end
+            end
         end
     end
 end
@@ -832,15 +858,17 @@ function SyncFriends:getFriendInfo(friendIndex)
     return playerName
 end
 
-function SyncFriends:RemoveFriend(playerNameOrID, ignore)
+function SyncFriends:RemoveFriend(playerNameOrIndex, ignore)
+    -- "playerNameOrIndex": is a string in situations like "/removefriend someone", or index (ie 2) if removing via Blizzard's Friends panel.
     -- "ignore" parameter: see SyncFriends:AddFriend.
-    if not ignore then
+    if ignore ~= true then
         local playerName
-        if type(playerNameOrID) == "number" then
-            playerName = self:getFriendInfo(playerNameOrID)
+        if type(playerNameOrIndex) == "number" then
+            playerName = self:getFriendInfo(playerNameOrIndex) -- No need to clean this up any further!
         else
-            playerName = playerNameOrID
+            playerName = self:_cleanupNameInput(playerNameOrIndex) -- Fix dirty user input...
         end
+        if not playerName then return; end -- Don't proceed if we lack a name at this point (ie. cleanup gave us nothing left).
         if self:getAutoExport() then
             self:storeAction(playerName, REMOVE_ACTION, false)
         end
@@ -1453,6 +1481,10 @@ function SyncFriends:getUISyncPoolOption()
     return friend_set
 end
 
+function SyncFriends:_properNameCase(playerName)
+    return (slower(playerName):gsub("^%l", supper)) -- Transform to "Propername" case.
+end
+
 -- DoIKnowYou Addon Integration:
 if DoIKnowYou and DoIKnowYou.sendMyData then
     -- All DoIKnowYou data writing functions (such as changing reputation
@@ -1481,7 +1513,7 @@ if DoIKnowYou and DoIKnowYou.sendMyData then
     DoIKnowYou.sendMyData = function(self, name_upper, ...)
         local ret = origSendMyData(self, name_upper, ...)
         if name_upper and doUpdate then
-            local name = (slower(name_upper):gsub("^%l", supper)) -- Transform to "Propername" case.
+            local name = SyncFriends:_properNameCase(name_upper)
             SyncFriends:_refreshUISyncPoolOption(name) -- NOTE: Does nothing if we don't have that person in our list.
         end
         return ret
