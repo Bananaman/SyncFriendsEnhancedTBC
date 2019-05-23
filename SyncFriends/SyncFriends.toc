@@ -23,6 +23,7 @@ Libraries\AceGUI-3.0\AceGUI-3.0.xml
 Libraries\AceHook-3.0\AceHook-3.0.xml
 Libraries\AceLocale-3.0\AceLocale-3.0.xml
 Libraries\AceConfig-3.0\AceConfig-3.0.xml
+Libraries\AceTimer-3.0\AceTimer-3.0.xml
 
 Locales\enUS.lua
 Locales\frFR.lua
