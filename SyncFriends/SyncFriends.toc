@@ -1,6 +1,6 @@
 ## Interface: 20400
 ## Title: SyncFriends Enhanced (TBC)
-## Version: 1.4.0
+## Version: 1.4.1
 ## Author: Vincent Pelletier
 ## X-Additional-Authors: VideoPlayerCode (TBC Backporting & Enhancements)
 ## X-Website: https://github.com/VideoPlayerCode/SyncFriendsEnhancedTBC
