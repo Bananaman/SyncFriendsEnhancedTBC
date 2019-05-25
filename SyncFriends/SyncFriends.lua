@@ -515,6 +515,9 @@ LibStub("AceConfigDialog-3.0-ElvUI"):AddToBlizOptions("SyncFriends")
 -- friends data even if the game is full. It's always stored in your SyncFriends pool!
 local MAX_FRIEND_COUNT = 50
 
+-- How many times to try adding/deleting a person, before giving up...
+local MAX_ATTEMPTS = 5
+
 -- Action flags.
 local ADD_ACTION = 1
 local REMOVE_ACTION = 2
@@ -592,12 +595,16 @@ function FriendQueue:DoNext()
                 end
             end
         end
-        if self.attempt <= 5 and apiCall then
+        if self.attempt <= MAX_ATTEMPTS and apiCall then
             SyncFriends:CancelTimer(self.timerHandle, true) -- Cancel any previous, untriggered timer.
             self.timerHandle = SyncFriends:ScheduleTimer(FriendQueue.HandleTimerTrigger, 5, FriendQueue) -- Anti-stuck timer (5s).
             apiCall(self.pending, data.ignore) -- Result of this API call will cause FRIENDLIST_UPDATE to trigger.
         else
             -- Invalid action or too many attempts; remove person from queue and re-trigger to get another entry.
+            if apiCall and self.attempt > MAX_ATTEMPTS then -- Only shows if valid action (apiCall has a value).
+                SyncFriends:Print(sformat(L[data.action == ADD_ACTION and "Could not add %s" or "Could not remove %s"],
+                    self.pending))
+            end
             self.queue[self.pending] = nil
             self:DoNext()
         end
